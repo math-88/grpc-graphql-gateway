@@ -3,17 +3,20 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"encoding/json"
 	"net/http"
+	"net/textproto"
 
 	"github.com/graphql-go/graphql"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 type (
 	// MiddlewareFunc type definition
-	MiddlewareFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, error)
+	MiddlewareFunc func(ctx context.Context, serveMux *ServeMux, w http.ResponseWriter, r *http.Request) (context.Context, error)
 )
 
 type GraphqlHandler interface {
@@ -22,6 +25,9 @@ type GraphqlHandler interface {
 	GetQueries(*grpc.ClientConn) graphql.Fields
 }
 
+// HeaderMatcherFunc checks whether a header key should be forwarded to/from gRPC context.
+type HeaderMatcherFunc func(string) (string, bool)
+
 // ServeMux is struct can execute graphql request via incoming HTTP request.
 // This is inspired from grpc-gateway implementation, thanks!
 type ServeMux struct {
@@ -29,6 +35,10 @@ type ServeMux struct {
 	ErrorHandler GraphqlErrorHandler
 
 	handlers []GraphqlHandler
+
+	incomingHeaderMatcher HeaderMatcherFunc
+	outgoingHeaderMatcher HeaderMatcherFunc
+	metadataAnnotators    []func(context.Context, *http.Request) metadata.MD
 }
 
 // NewServeMux creates ServeMux pointer
@@ -85,12 +95,26 @@ func (s *ServeMux) Use(ms ...MiddlewareFunc) *ServeMux {
 	return s
 }
 
+// DefaultHeaderMatcher is used to pass http request headers to/from gRPC context. This adds permanent HTTP header
+// keys (as specified by the IANA, e.g: Accept, Cookie, Host) to the gRPC metadata with the grpcgateway- prefix. If you want to know which headers are considered permanent, you can view the isPermanentHTTPHeader function.
+// HTTP headers that start with 'Grpc-Metadata-' are mapped to gRPC metadata after removing the prefix 'Grpc-Metadata-'.
+// Other headers are not added to the gRPC metadata.
+func DefaultHeaderMatcher(key string) (string, bool) {
+	switch key = textproto.CanonicalMIMEHeaderKey(key); {
+	case isPermanentHTTPHeader(key):
+		return MetadataPrefix + key, true
+	case strings.HasPrefix(key, MetadataHeaderPrefix):
+		return key[len(MetadataHeaderPrefix):], true
+	}
+	return "", false
+}
+
 // ServeHTTP implements http.Handler
 func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	for _, m := range s.middlewares {
 		var err error
-		ctx, err = m(ctx, w, r)
+		ctx, err = m(ctx, s, w, r)
 		if err != nil {
 			ge := GraphqlError{}
 			if me, ok := err.(*MiddlewareError); ok {
@@ -108,6 +132,16 @@ func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Errors: []GraphqlError{ge},
 			})
 			return
+		}
+	}
+
+	if s.incomingHeaderMatcher == nil {
+		s.incomingHeaderMatcher = DefaultHeaderMatcher
+	}
+
+	if s.outgoingHeaderMatcher == nil {
+		s.outgoingHeaderMatcher = func(key string) (string, bool) {
+			return fmt.Sprintf("%s%s", MetadataHeaderPrefix, key), true
 		}
 	}
 

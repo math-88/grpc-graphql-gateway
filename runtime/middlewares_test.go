@@ -17,7 +17,7 @@ func TestMiddlewareError(t *testing.T) {
 	t.Run("Set message field on common error", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mux := NewServeMux()
-			mux.Use(func(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, error) {
+			mux.Use(func(ctx context.Context, serveMux *ServeMux, w http.ResponseWriter, r *http.Request) (context.Context, error) {
 				return ctx, errors.New("error")
 			})
 			mux.ServeHTTP(w, r)
@@ -43,7 +43,7 @@ func TestMiddlewareError(t *testing.T) {
 	t.Run("Set message field on MiddewareError", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mux := NewServeMux()
-			mux.Use(func(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, error) {
+			mux.Use(func(ctx context.Context, serveMux *ServeMux, w http.ResponseWriter, r *http.Request) (context.Context, error) {
 				return ctx, NewMiddlewareError("CUSTOM_CODE", "CUSTOM_MESSAGE")
 			})
 			mux.ServeHTTP(w, r)
